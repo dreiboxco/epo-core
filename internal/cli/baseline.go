@@ -13,6 +13,7 @@ import (
 
 	"github.com/dreiboxco/epo-core/internal/baseline/age"
 	"github.com/dreiboxco/epo-core/internal/baseline/busfactor"
+	"github.com/dreiboxco/epo-core/internal/baseline/coupling"
 	gitsource "github.com/dreiboxco/epo-core/internal/baseline/git"
 	"github.com/dreiboxco/epo-core/internal/baseline/hotspots"
 	"github.com/dreiboxco/epo-core/internal/baseline/report"
@@ -33,17 +34,21 @@ knowledge silos, hotspots, and basic DORA metrics.`,
 }
 
 type scanFlags struct {
-	path           string
-	metric         string
-	out            string
-	since          string
-	threshold      float64
-	componentDepth int
-	ignore         []string
-	top            int
-	includeMerges  bool
-	repoLabel      string
-	bugPattern     string
+	path              string
+	metric            string
+	out               string
+	since             string
+	threshold         float64
+	componentDepth    int
+	ignore            []string
+	top               int
+	includeMerges     bool
+	repoLabel         string
+	bugPattern        string
+	minSupport        int
+	minConfidence     float64
+	maxFilesPerCommit int
+	maxCommitsPerFile int
 }
 
 func newBaselineScanCommand() *cobra.Command {
@@ -59,14 +64,15 @@ Supported metrics:
   busfactor   per-file authorship concentration (default)
   hotspots    churn × bug-fix density per file
   silos       churn / unique contributors per file
-  age         distribution of last-touched timestamps`,
+  age         distribution of last-touched timestamps
+  coupling    pairs of files that change together`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runScan(cmd.OutOrStdout(), f)
 		},
 	}
 
 	cmd.Flags().StringVar(&f.path, "path", ".", "path to the local git repository to scan")
-	cmd.Flags().StringVar(&f.metric, "metric", "busfactor", "metric to compute (busfactor, hotspots, silos, age)")
+	cmd.Flags().StringVar(&f.metric, "metric", "busfactor", "metric to compute (busfactor, hotspots, silos, age, coupling)")
 	cmd.Flags().StringVar(&f.out, "out", "", "output file path (default: stdout)")
 	cmd.Flags().StringVar(&f.since, "since", "12 months", "time window: '12 months', '6 weeks', '90 days', or a date YYYY-MM-DD")
 	cmd.Flags().Float64Var(&f.threshold, "threshold", 0.5, "coverage threshold for bus factor (busfactor only)")
@@ -76,6 +82,10 @@ Supported metrics:
 	cmd.Flags().BoolVar(&f.includeMerges, "include-merges", false, "include merge commits in the analysis")
 	cmd.Flags().StringVar(&f.repoLabel, "repo-label", "", "name to show in the report heading (default: derived from --path)")
 	cmd.Flags().StringVar(&f.bugPattern, "bug-pattern", "", "override the regex used to classify bug-fix commits (hotspots only)")
+	cmd.Flags().IntVar(&f.minSupport, "min-support", 0, "minimum co-occurrence count for a coupled pair to surface (coupling only; default 5)")
+	cmd.Flags().Float64Var(&f.minConfidence, "min-confidence", 0, "minimum average bidirectional confidence (coupling only; default 0.5)")
+	cmd.Flags().IntVar(&f.maxFilesPerCommit, "max-files-per-commit", 0, "skip commits touching more files than this (coupling only; default 50)")
+	cmd.Flags().IntVar(&f.maxCommitsPerFile, "max-commits-per-file", 0, "treat files appearing in more commits than this as catch-all (coupling only; default 200)")
 
 	return cmd
 }
@@ -187,8 +197,28 @@ func runScan(stdout io.Writer, f scanFlags) error {
 				f.out, r.FilesAnalyzed, r.MedianAgeDays, stale)
 		}
 
+	case "coupling":
+		r := coupling.Analyze(commits, coupling.Options{
+			MinSupport:        f.minSupport,
+			MinConfidence:     f.minConfidence,
+			MaxFilesPerCommit: f.maxFilesPerCommit,
+			MaxCommitsPerFile: f.maxCommitsPerFile,
+			ComponentDepth:    f.componentDepth,
+			Ignore:            f.ignore,
+		})
+		if err := report.RenderCoupling(out, r, report.CouplingOptions{
+			RepoLabel: label,
+			TopN:      f.top,
+		}); err != nil {
+			return err
+		}
+		if f.out != "" {
+			fmt.Fprintf(stdout, "wrote %s (%d pairs, %d catch-all files excluded, %d mass-edit commits excluded)\n",
+				f.out, len(r.Pairs), len(r.FilesExcludedAsCatchall), r.CommitsExcluded)
+		}
+
 	default:
-		return fmt.Errorf("metric %q is not supported (use: busfactor, hotspots, silos, age)", f.metric)
+		return fmt.Errorf("metric %q is not supported (use: busfactor, hotspots, silos, age, coupling)", f.metric)
 	}
 
 	return nil
