@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dreiboxco/epo-core/internal/baseline/age"
 	"github.com/dreiboxco/epo-core/internal/baseline/busfactor"
 	gitsource "github.com/dreiboxco/epo-core/internal/baseline/git"
 	"github.com/dreiboxco/epo-core/internal/baseline/hotspots"
@@ -57,14 +58,15 @@ the result as markdown to --out (or stdout if not provided).
 Supported metrics:
   busfactor   per-file authorship concentration (default)
   hotspots    churn × bug-fix density per file
-  silos       churn / unique contributors per file`,
+  silos       churn / unique contributors per file
+  age         distribution of last-touched timestamps`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runScan(cmd.OutOrStdout(), f)
 		},
 	}
 
 	cmd.Flags().StringVar(&f.path, "path", ".", "path to the local git repository to scan")
-	cmd.Flags().StringVar(&f.metric, "metric", "busfactor", "metric to compute (busfactor, hotspots, silos)")
+	cmd.Flags().StringVar(&f.metric, "metric", "busfactor", "metric to compute (busfactor, hotspots, silos, age)")
 	cmd.Flags().StringVar(&f.out, "out", "", "output file path (default: stdout)")
 	cmd.Flags().StringVar(&f.since, "since", "12 months", "time window: '12 months', '6 weeks', '90 days', or a date YYYY-MM-DD")
 	cmd.Flags().Float64Var(&f.threshold, "threshold", 0.5, "coverage threshold for bus factor (busfactor only)")
@@ -165,8 +167,28 @@ func runScan(stdout io.Writer, f scanFlags) error {
 				f.out, r.FilesAnalyzed, r.SingleContribFiles)
 		}
 
+	case "age":
+		r := age.Analyze(commits, age.Options{
+			ComponentDepth: f.componentDepth,
+			Ignore:         f.ignore,
+		})
+		if err := report.RenderAge(out, r, report.AgeOptions{
+			RepoLabel: label,
+			TopN:      f.top,
+		}); err != nil {
+			return err
+		}
+		if f.out != "" {
+			stale := 0
+			if len(r.Buckets) > 0 {
+				stale = r.Buckets[len(r.Buckets)-1].FileCount
+			}
+			fmt.Fprintf(stdout, "wrote %s (%d files, median age %dd, %d stale files >365d)\n",
+				f.out, r.FilesAnalyzed, r.MedianAgeDays, stale)
+		}
+
 	default:
-		return fmt.Errorf("metric %q is not supported (use: busfactor, hotspots, silos)", f.metric)
+		return fmt.Errorf("metric %q is not supported (use: busfactor, hotspots, silos, age)", f.metric)
 	}
 
 	return nil
