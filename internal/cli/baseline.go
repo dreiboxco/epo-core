@@ -15,6 +15,7 @@ import (
 	gitsource "github.com/dreiboxco/epo-core/internal/baseline/git"
 	"github.com/dreiboxco/epo-core/internal/baseline/hotspots"
 	"github.com/dreiboxco/epo-core/internal/baseline/report"
+	"github.com/dreiboxco/epo-core/internal/baseline/silos"
 )
 
 func newBaselineCommand() *cobra.Command {
@@ -55,14 +56,15 @@ the result as markdown to --out (or stdout if not provided).
 
 Supported metrics:
   busfactor   per-file authorship concentration (default)
-  hotspots    churn × bug-fix density per file`,
+  hotspots    churn × bug-fix density per file
+  silos       churn / unique contributors per file`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runScan(cmd.OutOrStdout(), f)
 		},
 	}
 
 	cmd.Flags().StringVar(&f.path, "path", ".", "path to the local git repository to scan")
-	cmd.Flags().StringVar(&f.metric, "metric", "busfactor", "metric to compute (busfactor, hotspots)")
+	cmd.Flags().StringVar(&f.metric, "metric", "busfactor", "metric to compute (busfactor, hotspots, silos)")
 	cmd.Flags().StringVar(&f.out, "out", "", "output file path (default: stdout)")
 	cmd.Flags().StringVar(&f.since, "since", "12 months", "time window: '12 months', '6 weeks', '90 days', or a date YYYY-MM-DD")
 	cmd.Flags().Float64Var(&f.threshold, "threshold", 0.5, "coverage threshold for bus factor (busfactor only)")
@@ -147,8 +149,24 @@ func runScan(stdout io.Writer, f scanFlags) error {
 				f.out, r.FilesAnalyzed, r.FixCommits, r.CommitsAnalyzed)
 		}
 
+	case "silos":
+		r := silos.Analyze(commits, silos.Options{
+			ComponentDepth: f.componentDepth,
+			Ignore:         f.ignore,
+		})
+		if err := report.RenderSilos(out, r, report.SilosOptions{
+			RepoLabel: label,
+			TopN:      f.top,
+		}); err != nil {
+			return err
+		}
+		if f.out != "" {
+			fmt.Fprintf(stdout, "wrote %s (%d files, %d single-contributor)\n",
+				f.out, r.FilesAnalyzed, r.SingleContribFiles)
+		}
+
 	default:
-		return fmt.Errorf("metric %q is not supported (use: busfactor, hotspots)", f.metric)
+		return fmt.Errorf("metric %q is not supported (use: busfactor, hotspots, silos)", f.metric)
 	}
 
 	return nil
