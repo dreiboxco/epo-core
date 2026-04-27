@@ -52,6 +52,7 @@ type scanFlags struct {
 	maxFilesPerCommit int
 	maxCommitsPerFile int
 	bucket            string
+	ref               string
 }
 
 func newBaselineScanCommand() *cobra.Command {
@@ -91,6 +92,7 @@ Supported metrics:
 	cmd.Flags().IntVar(&f.maxFilesPerCommit, "max-files-per-commit", 0, "skip commits touching more files than this (coupling only; default 50)")
 	cmd.Flags().IntVar(&f.maxCommitsPerFile, "max-commits-per-file", 0, "treat files appearing in more commits than this as catch-all (coupling only; default 200)")
 	cmd.Flags().StringVar(&f.bucket, "bucket", "weekly", "time-binning resolution for dora (daily, weekly, monthly)")
+	cmd.Flags().StringVar(&f.ref, "ref", "", "branch, tag, or commit to walk from (default: HEAD)")
 
 	return cmd
 }
@@ -103,6 +105,7 @@ func runScan(stdout io.Writer, f scanFlags) error {
 
 	commits, err := gitsource.Load(gitsource.LoadOptions{
 		Path:          f.path,
+		Ref:           f.ref,
 		Since:         since,
 		IncludeMerges: f.includeMerges,
 	})

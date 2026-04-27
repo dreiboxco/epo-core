@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/dreiboxco/epo-core/internal/baseline/source"
@@ -18,6 +19,10 @@ import (
 type LoadOptions struct {
 	// Path is the local path to a git working tree (or a bare repo).
 	Path string
+	// Ref is the branch, tag, or commit SHA to start the walk from. Empty
+	// falls back to HEAD. Useful for measuring against a specific branch
+	// (e.g. origin/main) without affecting the working tree.
+	Ref string
 	// Since restricts commits to those authored at or after this instant.
 	// Zero value disables the filter.
 	Since time.Time
@@ -43,12 +48,12 @@ func Load(opts LoadOptions) ([]source.Commit, error) {
 		return nil, fmt.Errorf("open repo at %s: %w", opts.Path, err)
 	}
 
-	head, err := repo.Head()
+	startHash, err := resolveRef(repo, opts.Ref)
 	if err != nil {
-		return nil, fmt.Errorf("resolve HEAD: %w", err)
+		return nil, err
 	}
 
-	iter, err := repo.Log(&git.LogOptions{From: head.Hash()})
+	iter, err := repo.Log(&git.LogOptions{From: startHash})
 	if err != nil {
 		return nil, fmt.Errorf("walk log: %w", err)
 	}
@@ -142,4 +147,24 @@ func identityKey(sig object.Signature) string {
 		return sig.Email
 	}
 	return sig.Name
+}
+
+// resolveRef turns a ref name (branch, tag, remote-tracking branch, or full
+// SHA) into a commit hash. Empty ref falls back to HEAD.
+//
+// Resolution order: HEAD → revision (handles "origin/main", tags, full SHAs,
+// short SHAs that go-git can disambiguate) → local branch → tag.
+func resolveRef(repo *git.Repository, ref string) (plumbing.Hash, error) {
+	if ref == "" {
+		head, err := repo.Head()
+		if err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("resolve HEAD: %w", err)
+		}
+		return head.Hash(), nil
+	}
+	hash, err := repo.ResolveRevision(plumbing.Revision(ref))
+	if err == nil && hash != nil {
+		return *hash, nil
+	}
+	return plumbing.ZeroHash, fmt.Errorf("resolve ref %q: %w", ref, err)
 }
