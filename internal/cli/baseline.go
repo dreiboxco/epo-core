@@ -14,6 +14,8 @@ import (
 	"github.com/dreiboxco/epo-core/internal/baseline/age"
 	"github.com/dreiboxco/epo-core/internal/baseline/busfactor"
 	"github.com/dreiboxco/epo-core/internal/baseline/coupling"
+	"github.com/dreiboxco/epo-core/internal/baseline/deploy"
+	"github.com/dreiboxco/epo-core/internal/baseline/failure"
 	gitsource "github.com/dreiboxco/epo-core/internal/baseline/git"
 	"github.com/dreiboxco/epo-core/internal/baseline/hotspots"
 	"github.com/dreiboxco/epo-core/internal/baseline/report"
@@ -49,6 +51,7 @@ type scanFlags struct {
 	minConfidence     float64
 	maxFilesPerCommit int
 	maxCommitsPerFile int
+	bucket            string
 }
 
 func newBaselineScanCommand() *cobra.Command {
@@ -65,14 +68,15 @@ Supported metrics:
   hotspots    churn × bug-fix density per file
   silos       churn / unique contributors per file
   age         distribution of last-touched timestamps
-  coupling    pairs of files that change together`,
+  coupling    pairs of files that change together
+  dora        Phase-1 DORA: deployment frequency + change failure rate`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runScan(cmd.OutOrStdout(), f)
 		},
 	}
 
 	cmd.Flags().StringVar(&f.path, "path", ".", "path to the local git repository to scan")
-	cmd.Flags().StringVar(&f.metric, "metric", "busfactor", "metric to compute (busfactor, hotspots, silos, age, coupling)")
+	cmd.Flags().StringVar(&f.metric, "metric", "busfactor", "metric to compute (busfactor, hotspots, silos, age, coupling, dora)")
 	cmd.Flags().StringVar(&f.out, "out", "", "output file path (default: stdout)")
 	cmd.Flags().StringVar(&f.since, "since", "12 months", "time window: '12 months', '6 weeks', '90 days', or a date YYYY-MM-DD")
 	cmd.Flags().Float64Var(&f.threshold, "threshold", 0.5, "coverage threshold for bus factor (busfactor only)")
@@ -86,6 +90,7 @@ Supported metrics:
 	cmd.Flags().Float64Var(&f.minConfidence, "min-confidence", 0, "minimum average bidirectional confidence (coupling only; default 0.5)")
 	cmd.Flags().IntVar(&f.maxFilesPerCommit, "max-files-per-commit", 0, "skip commits touching more files than this (coupling only; default 50)")
 	cmd.Flags().IntVar(&f.maxCommitsPerFile, "max-commits-per-file", 0, "treat files appearing in more commits than this as catch-all (coupling only; default 200)")
+	cmd.Flags().StringVar(&f.bucket, "bucket", "weekly", "time-binning resolution for dora (daily, weekly, monthly)")
 
 	return cmd
 }
@@ -217,8 +222,40 @@ func runScan(stdout io.Writer, f scanFlags) error {
 				f.out, len(r.Pairs), len(r.FilesExcludedAsCatchall), r.CommitsExcluded)
 		}
 
+	case "dora":
+		bucket, err := parseBucket(f.bucket)
+		if err != nil {
+			return err
+		}
+		var pattern *regexp.Regexp
+		if f.bugPattern != "" {
+			pattern, err = regexp.Compile(f.bugPattern)
+			if err != nil {
+				return fmt.Errorf("--bug-pattern: %w", err)
+			}
+		}
+		dep := deploy.Analyze(commits, deploy.Options{
+			Bucket: bucket,
+			Ignore: f.ignore,
+		})
+		fail := failure.Analyze(commits, failure.Options{
+			Bucket:     bucket,
+			BugPattern: pattern,
+			Ignore:     f.ignore,
+		})
+		if err := report.RenderDora(out, dep, fail, report.DoraOptions{
+			RepoLabel: label,
+			TopN:      f.top,
+		}); err != nil {
+			return err
+		}
+		if f.out != "" {
+			fmt.Fprintf(stdout, "wrote %s (deploys: %d / %d buckets, failure rate: %.1f%%)\n",
+				f.out, dep.TotalCommits, dep.BucketsCount, fail.OverallRate*100)
+		}
+
 	default:
-		return fmt.Errorf("metric %q is not supported (use: busfactor, hotspots, silos, age, coupling)", f.metric)
+		return fmt.Errorf("metric %q is not supported (use: busfactor, hotspots, silos, age, coupling, dora)", f.metric)
 	}
 
 	return nil
@@ -233,6 +270,19 @@ func openOutput(path string) (io.Writer, func(), error) {
 		return nil, nil, err
 	}
 	return f, func() { _ = f.Close() }, nil
+}
+
+// parseBucket maps a string flag value to the deploy.Bucket constant.
+func parseBucket(s string) (deploy.Bucket, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "weekly", "week":
+		return deploy.BucketWeekly, nil
+	case "daily", "day":
+		return deploy.BucketDaily, nil
+	case "monthly", "month":
+		return deploy.BucketMonthly, nil
+	}
+	return "", fmt.Errorf("--bucket: unknown value %q (use daily, weekly, monthly)", s)
 }
 
 // parseSince accepts:
