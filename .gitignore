@@ -1,0 +1,36 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace
+go.work
+go.work.sum
+vendor/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+
+# Local-only files
+*.local.md
+.env
+.env.*
+
+# Local agent runtime (RuFlo / claude-flow); not part of the public repo
+.claude-flow/
+.claude/
+.swarm/
