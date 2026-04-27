@@ -11,7 +11,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/dreiboxco/epo-core/internal/baseline/busfactor"
+	"github.com/dreiboxco/epo-core/internal/baseline/source"
 )
 
 // LoadOptions configures the commit walk.
@@ -27,13 +27,13 @@ type LoadOptions struct {
 }
 
 // Load opens the repo at opts.Path and walks the HEAD branch, returning a
-// slice of busfactor.Commit ready for analysis.
+// slice of source.Commit ready for analysis.
 //
 // The implementation diffs each commit against its first parent (or against
 // an empty tree for the root commit) to recover the list of changed files.
 // Renames are reported as a deletion of the old path and an addition of the
 // new path; merging into a single "rename" is left to a future iteration.
-func Load(opts LoadOptions) ([]busfactor.Commit, error) {
+func Load(opts LoadOptions) ([]source.Commit, error) {
 	if opts.Path == "" {
 		return nil, errors.New("git.Load: Path is required")
 	}
@@ -54,7 +54,7 @@ func Load(opts LoadOptions) ([]busfactor.Commit, error) {
 	}
 	defer iter.Close()
 
-	var out []busfactor.Commit
+	var out []source.Commit
 	walkErr := iter.ForEach(func(c *object.Commit) error {
 		if !opts.Since.IsZero() && c.Author.When.Before(opts.Since) {
 			return nil
@@ -71,11 +71,12 @@ func Load(opts LoadOptions) ([]busfactor.Commit, error) {
 			return nil
 		}
 
-		out = append(out, busfactor.Commit{
-			SHA:    c.Hash.String(),
-			Author: identityKey(c.Author),
-			When:   c.Author.When,
-			Files:  files,
+		out = append(out, source.Commit{
+			SHA:     c.Hash.String(),
+			Author:  identityKey(c.Author),
+			When:    c.Author.When,
+			Files:   files,
+			Message: c.Message,
 		})
 		return nil
 	})

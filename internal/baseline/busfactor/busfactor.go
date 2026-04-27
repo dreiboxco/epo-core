@@ -16,20 +16,13 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/dreiboxco/epo-core/internal/baseline/source"
 )
 
-// Commit is the minimal slice of a VCS commit the analyzer needs.
-type Commit struct {
-	// SHA is the commit identifier; only used for diagnostics.
-	SHA string
-	// Author identifies who made the commit. Email is the typical key, but
-	// callers may pass a normalized identity (e.g. after .mailmap merging).
-	Author string
-	// When is the commit timestamp (used for windowing).
-	When time.Time
-	// Files lists the files touched by the commit.
-	Files []string
-}
+// Commit is an alias for source.Commit so existing callers keep compiling.
+// New code should reference source.Commit directly.
+type Commit = source.Commit
 
 // Options configures an Analyze run.
 type Options struct {

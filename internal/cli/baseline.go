@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/dreiboxco/epo-core/internal/baseline/busfactor"
 	gitsource "github.com/dreiboxco/epo-core/internal/baseline/git"
+	"github.com/dreiboxco/epo-core/internal/baseline/hotspots"
 	"github.com/dreiboxco/epo-core/internal/baseline/report"
 )
 
@@ -39,6 +41,7 @@ type scanFlags struct {
 	top            int
 	includeMerges  bool
 	repoLabel      string
+	bugPattern     string
 }
 
 func newBaselineScanCommand() *cobra.Command {
@@ -51,31 +54,29 @@ func newBaselineScanCommand() *cobra.Command {
 the result as markdown to --out (or stdout if not provided).
 
 Supported metrics:
-  busfactor   per-file authorship concentration (default)`,
+  busfactor   per-file authorship concentration (default)
+  hotspots    churn × bug-fix density per file`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runScan(cmd.OutOrStdout(), f)
 		},
 	}
 
 	cmd.Flags().StringVar(&f.path, "path", ".", "path to the local git repository to scan")
-	cmd.Flags().StringVar(&f.metric, "metric", "busfactor", "metric to compute (busfactor)")
+	cmd.Flags().StringVar(&f.metric, "metric", "busfactor", "metric to compute (busfactor, hotspots)")
 	cmd.Flags().StringVar(&f.out, "out", "", "output file path (default: stdout)")
 	cmd.Flags().StringVar(&f.since, "since", "12 months", "time window: '12 months', '6 weeks', '90 days', or a date YYYY-MM-DD")
-	cmd.Flags().Float64Var(&f.threshold, "threshold", 0.5, "coverage threshold for bus factor")
+	cmd.Flags().Float64Var(&f.threshold, "threshold", 0.5, "coverage threshold for bus factor (busfactor only)")
 	cmd.Flags().IntVar(&f.componentDepth, "component-depth", 2, "path-segment depth for component aggregation")
 	cmd.Flags().StringSliceVar(&f.ignore, "ignore", []string{"vendor/", "node_modules/", "third_party/"}, "path prefixes to skip")
 	cmd.Flags().IntVar(&f.top, "top", 20, "show only the top N riskiest files (0 = all)")
 	cmd.Flags().BoolVar(&f.includeMerges, "include-merges", false, "include merge commits in the analysis")
 	cmd.Flags().StringVar(&f.repoLabel, "repo-label", "", "name to show in the report heading (default: derived from --path)")
+	cmd.Flags().StringVar(&f.bugPattern, "bug-pattern", "", "override the regex used to classify bug-fix commits (hotspots only)")
 
 	return cmd
 }
 
 func runScan(stdout io.Writer, f scanFlags) error {
-	if f.metric != "busfactor" {
-		return fmt.Errorf("metric %q is not supported yet (only busfactor)", f.metric)
-	}
-
 	since, err := parseSince(f.since)
 	if err != nil {
 		return fmt.Errorf("--since: %w", err)
@@ -89,12 +90,6 @@ func runScan(stdout io.Writer, f scanFlags) error {
 	if err != nil {
 		return err
 	}
-
-	r := busfactor.Analyze(commits, busfactor.Options{
-		Threshold:      f.threshold,
-		ComponentDepth: f.componentDepth,
-		Ignore:         f.ignore,
-	})
 
 	out, closer, err := openOutput(f.out)
 	if err != nil {
@@ -110,17 +105,52 @@ func runScan(stdout io.Writer, f scanFlags) error {
 		}
 	}
 
-	if err := report.RenderMarkdown(out, r, report.MarkdownOptions{
-		RepoLabel: label,
-		TopN:      f.top,
-	}); err != nil {
-		return err
+	switch f.metric {
+	case "busfactor":
+		r := busfactor.Analyze(commits, busfactor.Options{
+			Threshold:      f.threshold,
+			ComponentDepth: f.componentDepth,
+			Ignore:         f.ignore,
+		})
+		if err := report.RenderMarkdown(out, r, report.MarkdownOptions{
+			RepoLabel: label,
+			TopN:      f.top,
+		}); err != nil {
+			return err
+		}
+		if f.out != "" {
+			fmt.Fprintf(stdout, "wrote %s (%d files analyzed, %d with bus factor 1)\n",
+				f.out, r.FilesAnalyzed, r.BusFactorOneFiles)
+		}
+
+	case "hotspots":
+		var pattern *regexp.Regexp
+		if f.bugPattern != "" {
+			pattern, err = regexp.Compile(f.bugPattern)
+			if err != nil {
+				return fmt.Errorf("--bug-pattern: %w", err)
+			}
+		}
+		r := hotspots.Analyze(commits, hotspots.Options{
+			BugPattern:     pattern,
+			ComponentDepth: f.componentDepth,
+			Ignore:         f.ignore,
+		})
+		if err := report.RenderHotspots(out, r, report.HotspotsOptions{
+			RepoLabel: label,
+			TopN:      f.top,
+		}); err != nil {
+			return err
+		}
+		if f.out != "" {
+			fmt.Fprintf(stdout, "wrote %s (%d files, %d fix commits / %d total)\n",
+				f.out, r.FilesAnalyzed, r.FixCommits, r.CommitsAnalyzed)
+		}
+
+	default:
+		return fmt.Errorf("metric %q is not supported (use: busfactor, hotspots)", f.metric)
 	}
 
-	if f.out != "" {
-		fmt.Fprintf(stdout, "wrote %s (%d files analyzed, %d with bus factor 1)\n",
-			f.out, r.FilesAnalyzed, r.BusFactorOneFiles)
-	}
 	return nil
 }
 
