@@ -5,6 +5,7 @@ package git
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"time"
 
@@ -29,6 +30,12 @@ type LoadOptions struct {
 	// IncludeMerges keeps merge commits in the output. Default is to skip
 	// them — merges typically duplicate authorship signal.
 	IncludeMerges bool
+	// ExcludeAuthors drops commits whose author name OR email matches any
+	// of the patterns. Useful to silence bots (dependabot, renovate,
+	// github-actions[bot]) that inflate author counts and skew bus factor,
+	// silos, and DORA metrics. Patterns are applied case-insensitively when
+	// callers pass `(?i)` themselves; this loader does not normalize.
+	ExcludeAuthors []*regexp.Regexp
 }
 
 // Load opens the repo at opts.Path and walks the HEAD branch, returning a
@@ -65,6 +72,9 @@ func Load(opts LoadOptions) ([]source.Commit, error) {
 			return nil
 		}
 		if !opts.IncludeMerges && c.NumParents() > 1 {
+			return nil
+		}
+		if authorExcluded(c.Author, opts.ExcludeAuthors) {
 			return nil
 		}
 
@@ -137,6 +147,27 @@ func changedFiles(c *object.Commit) ([]string, error) {
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+// authorExcluded reports whether the signature matches any of the exclusion
+// patterns. The patterns are tested against name and email independently;
+// either match drops the commit.
+func authorExcluded(sig object.Signature, patterns []*regexp.Regexp) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	for _, p := range patterns {
+		if p == nil {
+			continue
+		}
+		if sig.Name != "" && p.MatchString(sig.Name) {
+			return true
+		}
+		if sig.Email != "" && p.MatchString(sig.Email) {
+			return true
+		}
+	}
+	return false
 }
 
 // identityKey returns the author key the analyzer uses. Email is preferred

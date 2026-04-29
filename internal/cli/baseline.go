@@ -53,6 +53,7 @@ type scanFlags struct {
 	maxCommitsPerFile int
 	bucket            string
 	ref               string
+	excludeAuthors    []string
 }
 
 func newBaselineScanCommand() *cobra.Command {
@@ -93,6 +94,10 @@ Supported metrics:
 	cmd.Flags().IntVar(&f.maxCommitsPerFile, "max-commits-per-file", 0, "treat files appearing in more commits than this as catch-all (coupling only; default 200)")
 	cmd.Flags().StringVar(&f.bucket, "bucket", "weekly", "time-binning resolution for dora (daily, weekly, monthly)")
 	cmd.Flags().StringVar(&f.ref, "ref", "", "branch, tag, or commit to walk from (default: HEAD)")
+	cmd.Flags().StringSliceVar(&f.excludeAuthors, "exclude-author", []string{`\[bot\]`},
+		"regex patterns matched against author name and email; commits matching any pattern are dropped. "+
+			"Default catches GitHub bot accounts (dependabot[bot], renovate[bot], github-actions[bot]). "+
+			"Pass --exclude-author='' to disable.")
 
 	return cmd
 }
@@ -103,11 +108,17 @@ func runScan(stdout io.Writer, f scanFlags) error {
 		return fmt.Errorf("--since: %w", err)
 	}
 
+	excludeAuthors, err := compilePatterns(f.excludeAuthors)
+	if err != nil {
+		return fmt.Errorf("--exclude-author: %w", err)
+	}
+
 	commits, err := gitsource.Load(gitsource.LoadOptions{
-		Path:          f.path,
-		Ref:           f.ref,
-		Since:         since,
-		IncludeMerges: f.includeMerges,
+		Path:           f.path,
+		Ref:            f.ref,
+		Since:          since,
+		IncludeMerges:  f.includeMerges,
+		ExcludeAuthors: excludeAuthors,
 	})
 	if err != nil {
 		return err
@@ -273,6 +284,26 @@ func openOutput(path string) (io.Writer, func(), error) {
 		return nil, nil, err
 	}
 	return f, func() { _ = f.Close() }, nil
+}
+
+// compilePatterns turns user-supplied regex strings into compiled patterns.
+// Empty strings are dropped so `--exclude-author=` cleanly disables the default.
+func compilePatterns(raw []string) ([]*regexp.Regexp, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]*regexp.Regexp, 0, len(raw))
+	for _, p := range raw {
+		if p == "" {
+			continue
+		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return nil, fmt.Errorf("invalid pattern %q: %w", p, err)
+		}
+		out = append(out, re)
+	}
+	return out, nil
 }
 
 // parseBucket maps a string flag value to the deploy.Bucket constant.
