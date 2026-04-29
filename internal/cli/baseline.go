@@ -53,6 +53,7 @@ type scanFlags struct {
 	maxCommitsPerFile int
 	bucket            string
 	ref               string
+	excludeAuthors    []string
 }
 
 func newBaselineScanCommand() *cobra.Command {
@@ -82,7 +83,10 @@ Supported metrics:
 	cmd.Flags().StringVar(&f.since, "since", "12 months", "time window: '12 months', '6 weeks', '90 days', or a date YYYY-MM-DD")
 	cmd.Flags().Float64Var(&f.threshold, "threshold", 0.5, "coverage threshold for bus factor (busfactor only)")
 	cmd.Flags().IntVar(&f.componentDepth, "component-depth", 2, "path-segment depth for component aggregation")
-	cmd.Flags().StringSliceVar(&f.ignore, "ignore", []string{"vendor/", "node_modules/", "third_party/"}, "path prefixes to skip")
+	cmd.Flags().StringSliceVar(&f.ignore, "ignore",
+		[]string{"vendor/", "node_modules/", "third_party/", "CHANGELOG.md"},
+		"path prefixes to skip. Default ignores common dependency caches and root-level CHANGELOG.md "+
+			"(catch-all that inflates churn and coupling without signal).")
 	cmd.Flags().IntVar(&f.top, "top", 20, "show only the top N riskiest files (0 = all)")
 	cmd.Flags().BoolVar(&f.includeMerges, "include-merges", false, "include merge commits in the analysis")
 	cmd.Flags().StringVar(&f.repoLabel, "repo-label", "", "name to show in the report heading (default: derived from --path)")
@@ -92,7 +96,13 @@ Supported metrics:
 	cmd.Flags().IntVar(&f.maxFilesPerCommit, "max-files-per-commit", 0, "skip commits touching more files than this (coupling only; default 50)")
 	cmd.Flags().IntVar(&f.maxCommitsPerFile, "max-commits-per-file", 0, "treat files appearing in more commits than this as catch-all (coupling only; default 200)")
 	cmd.Flags().StringVar(&f.bucket, "bucket", "weekly", "time-binning resolution for dora (daily, weekly, monthly)")
-	cmd.Flags().StringVar(&f.ref, "ref", "", "branch, tag, or commit to walk from (default: HEAD)")
+	cmd.Flags().StringVar(&f.ref, "ref", "", "branch, tag, or commit to walk from (default: HEAD). "+
+		"Pass 'auto' to resolve the integration branch from origin/HEAD with fallback heuristic "+
+		"(main → master → trunk → develop → development).")
+	cmd.Flags().StringSliceVar(&f.excludeAuthors, "exclude-author", []string{`\[bot\]`},
+		"regex patterns matched against author name and email; commits matching any pattern are dropped. "+
+			"Default catches GitHub bot accounts (dependabot[bot], renovate[bot], github-actions[bot]). "+
+			"Pass --exclude-author='' to disable.")
 
 	return cmd
 }
@@ -103,11 +113,27 @@ func runScan(stdout io.Writer, f scanFlags) error {
 		return fmt.Errorf("--since: %w", err)
 	}
 
+	excludeAuthors, err := compilePatterns(f.excludeAuthors)
+	if err != nil {
+		return fmt.Errorf("--exclude-author: %w", err)
+	}
+
+	ref := f.ref
+	if strings.EqualFold(strings.TrimSpace(ref), "auto") {
+		branch, resolveErr := gitsource.ResolveIntegrationBranch(f.path)
+		if resolveErr != nil {
+			return fmt.Errorf("--ref auto: %w", resolveErr)
+		}
+		ref = "origin/" + branch
+		fmt.Fprintf(os.Stderr, "epo: --ref auto resolved to %s\n", ref)
+	}
+
 	commits, err := gitsource.Load(gitsource.LoadOptions{
-		Path:          f.path,
-		Ref:           f.ref,
-		Since:         since,
-		IncludeMerges: f.includeMerges,
+		Path:           f.path,
+		Ref:            ref,
+		Since:          since,
+		IncludeMerges:  f.includeMerges,
+		ExcludeAuthors: excludeAuthors,
 	})
 	if err != nil {
 		return err
@@ -273,6 +299,26 @@ func openOutput(path string) (io.Writer, func(), error) {
 		return nil, nil, err
 	}
 	return f, func() { _ = f.Close() }, nil
+}
+
+// compilePatterns turns user-supplied regex strings into compiled patterns.
+// Empty strings are dropped so `--exclude-author=` cleanly disables the default.
+func compilePatterns(raw []string) ([]*regexp.Regexp, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]*regexp.Regexp, 0, len(raw))
+	for _, p := range raw {
+		if p == "" {
+			continue
+		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return nil, fmt.Errorf("invalid pattern %q: %w", p, err)
+		}
+		out = append(out, re)
+	}
+	return out, nil
 }
 
 // parseBucket maps a string flag value to the deploy.Bucket constant.
