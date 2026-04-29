@@ -83,7 +83,10 @@ Supported metrics:
 	cmd.Flags().StringVar(&f.since, "since", "12 months", "time window: '12 months', '6 weeks', '90 days', or a date YYYY-MM-DD")
 	cmd.Flags().Float64Var(&f.threshold, "threshold", 0.5, "coverage threshold for bus factor (busfactor only)")
 	cmd.Flags().IntVar(&f.componentDepth, "component-depth", 2, "path-segment depth for component aggregation")
-	cmd.Flags().StringSliceVar(&f.ignore, "ignore", []string{"vendor/", "node_modules/", "third_party/"}, "path prefixes to skip")
+	cmd.Flags().StringSliceVar(&f.ignore, "ignore",
+		[]string{"vendor/", "node_modules/", "third_party/", "CHANGELOG.md"},
+		"path prefixes to skip. Default ignores common dependency caches and root-level CHANGELOG.md "+
+			"(catch-all that inflates churn and coupling without signal).")
 	cmd.Flags().IntVar(&f.top, "top", 20, "show only the top N riskiest files (0 = all)")
 	cmd.Flags().BoolVar(&f.includeMerges, "include-merges", false, "include merge commits in the analysis")
 	cmd.Flags().StringVar(&f.repoLabel, "repo-label", "", "name to show in the report heading (default: derived from --path)")
