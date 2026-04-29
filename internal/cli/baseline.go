@@ -93,7 +93,9 @@ Supported metrics:
 	cmd.Flags().IntVar(&f.maxFilesPerCommit, "max-files-per-commit", 0, "skip commits touching more files than this (coupling only; default 50)")
 	cmd.Flags().IntVar(&f.maxCommitsPerFile, "max-commits-per-file", 0, "treat files appearing in more commits than this as catch-all (coupling only; default 200)")
 	cmd.Flags().StringVar(&f.bucket, "bucket", "weekly", "time-binning resolution for dora (daily, weekly, monthly)")
-	cmd.Flags().StringVar(&f.ref, "ref", "", "branch, tag, or commit to walk from (default: HEAD)")
+	cmd.Flags().StringVar(&f.ref, "ref", "", "branch, tag, or commit to walk from (default: HEAD). "+
+		"Pass 'auto' to resolve the integration branch from origin/HEAD with fallback heuristic "+
+		"(main → master → trunk → develop → development).")
 	cmd.Flags().StringSliceVar(&f.excludeAuthors, "exclude-author", []string{`\[bot\]`},
 		"regex patterns matched against author name and email; commits matching any pattern are dropped. "+
 			"Default catches GitHub bot accounts (dependabot[bot], renovate[bot], github-actions[bot]). "+
@@ -113,9 +115,19 @@ func runScan(stdout io.Writer, f scanFlags) error {
 		return fmt.Errorf("--exclude-author: %w", err)
 	}
 
+	ref := f.ref
+	if strings.EqualFold(strings.TrimSpace(ref), "auto") {
+		branch, resolveErr := gitsource.ResolveIntegrationBranch(f.path)
+		if resolveErr != nil {
+			return fmt.Errorf("--ref auto: %w", resolveErr)
+		}
+		ref = "origin/" + branch
+		fmt.Fprintf(os.Stderr, "epo: --ref auto resolved to %s\n", ref)
+	}
+
 	commits, err := gitsource.Load(gitsource.LoadOptions{
 		Path:           f.path,
-		Ref:            f.ref,
+		Ref:            ref,
 		Since:          since,
 		IncludeMerges:  f.includeMerges,
 		ExcludeAuthors: excludeAuthors,
